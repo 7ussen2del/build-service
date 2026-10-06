@@ -1,0 +1,21 @@
+# Never let a secret reach an image layer.
+.env
+*.pem
+*.key
+
+# VCS and local tooling
+.git
+.gitignore
+.github
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Local state
+build_workspaces
+*.sqlite3
+staticfiles

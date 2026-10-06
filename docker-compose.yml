@@ -1,0 +1,152 @@
+# Local infrastructure for the Build Service.
+#
+#   docker compose up --build
+#
+# Copy .env.example to .env to override the defaults below. Compose reads .env
+# for the ${...} substitutions; it is never copied into an image.
+#
+# Note the database URL is assembled here rather than taken from .env: inside
+# the compose network the host must be `postgres`, while a developer running
+# Django natively needs `localhost` in the very same file.
+
+name: build-service
+
+x-app-env: &app-env
+  DEBUG: ${DEBUG:-true}
+  SECRET_KEY: ${SECRET_KEY:-dev-insecure-change-me}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+  DATABASE_URL: postgres://${POSTGRES_USER:-build}:${POSTGRES_PASSWORD:-build}@postgres:5432/${POSTGRES_DB:-build_service}
+  CELERY_BROKER_URL: redis://redis:6379/0
+  BUILD_WORKSPACE_ROOT: /tmp/builds
+  TEMPLATES_ROOT: /app/build_templates
+  ACTIVE_TEMPLATE_VERSIONS: ${ACTIVE_TEMPLATE_VERSIONS:-django=v1,flask=v1,node=v1,react=v1}
+  INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
+  MAX_REPO_SIZE_MB: ${MAX_REPO_SIZE_MB:-100}
+  GIT_TIMEOUT_SECONDS: ${GIT_TIMEOUT_SECONDS:-60}
+
+x-app-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+
+x-depends-on-infra: &depends-on-infra
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-build}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-build}
+      POSTGRES_DB: ${POSTGRES_DB:-build_service}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-build} -d ${POSTGRES_DB:-build_service}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: *app-build
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+    environment:
+      <<: *app-env
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on: *depends-on-infra
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          sys.exit(0 if urllib.request.urlopen("http://localhost:8000/health/").status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Intake worker: consumes ONLY the `build` queue. It creates the Build row and
+  # hands off to the pipeline, so it must never be stuck behind a long build.
+  worker-intake:
+    build: *app-build
+    command: >
+      celery -A config worker
+      --queues build
+      --concurrency 2
+      --hostname intake@%h
+      --loglevel=INFO
+    environment:
+      <<: *app-env
+    volumes:
+      - .:/app
+    depends_on: *depends-on-infra
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d intake@$$(hostname) --timeout 10"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 20s
+
+  # Pipeline worker: clone, render, build, push -- plus downstream
+  # notifications. Phase 11 may split `build_notify` onto its own worker; the
+  # queue already exists so that is a one-line change.
+  worker-exec:
+    build: *app-build
+    command: >
+      celery -A config worker
+      --queues build_exec,build_notify
+      --concurrency 4
+      --hostname exec@%h
+      --loglevel=INFO
+    environment:
+      <<: *app-env
+    volumes:
+      - .:/app
+      # Build workspaces are ephemeral and must never grow the writable layer.
+      - build_workspaces:/tmp/builds
+    depends_on: *depends-on-infra
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d exec@$$(hostname) --timeout 10"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 20s
+
+  # Periodic work: stuck-build reconciler (Phase 10), build record retention.
+  beat:
+    build: *app-build
+    command: >
+      celery -A config beat
+      --schedule=/tmp/celerybeat-schedule
+      --loglevel=INFO
+    environment:
+      <<: *app-env
+    volumes:
+      - .:/app
+    depends_on: *depends-on-infra
+
+volumes:
+  postgres_data:
+  build_workspaces:
