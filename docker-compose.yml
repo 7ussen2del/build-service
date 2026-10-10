@@ -1,0 +1,87 @@
+# Local development stack: Postgres + Redis + API + one Celery worker (+ beat).
+# Values come from a local .env file (see .env.example); the defaults below
+# keep `docker compose up` working without one.
+
+name: build-service
+
+x-app: &app
+  build:
+    context: .
+  environment:
+    SECRET_KEY: ${SECRET_KEY:-dev-insecure-change-me}
+    DEBUG: ${DEBUG:-1}
+    DATABASE_URL: ${DATABASE_URL:-postgresql://build:build@postgres:5432/build_service}
+    CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+    BUILD_WORKSPACE_ROOT: ${BUILD_WORKSPACE_ROOT:-/tmp/builds}
+    INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
+    BUILD_CALLBACK_BASE_URL: ${BUILD_CALLBACK_BASE_URL:-http://web:8000}
+    JENKINS_URL: ${JENKINS_URL:-http://jenkins:8080}
+    JENKINS_USER: ${JENKINS_USER:-}
+    JENKINS_API_TOKEN: ${JENKINS_API_TOKEN:-}
+    JENKINS_JOB_NAME: ${JENKINS_JOB_NAME:-build-image}
+    DOCKERHUB_NAMESPACE: ${DOCKERHUB_NAMESPACE:-example}
+    PLATFORM_NAME: ${PLATFORM_NAME:-iiap}
+    GIT_TIMEOUT_SECONDS: ${GIT_TIMEOUT_SECONDS:-120}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  volumes:
+    - .:/app
+    - build_workspace:/tmp/builds
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: build_service
+      POSTGRES_USER: build
+      POSTGRES_PASSWORD: build
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U build -d build_service"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+  web:
+    <<: *app
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ONE worker consuming all three queues, as per the plan.
+  worker:
+    <<: *app
+    command: celery -A config worker -l info -Q build,build_exec,build_notify --concurrency ${CELERY_CONCURRENCY:-2}
+
+  # Only needed once the Phase 10 reconciler exists; harmless before that.
+  beat:
+    <<: *app
+    command: celery -A config beat -l info --schedule /tmp/builds/celerybeat-schedule
+
+volumes:
+  pgdata:
+  build_workspace:

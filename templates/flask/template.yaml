@@ -1,0 +1,16 @@
+name: flask
+version: v1
+base_image: python:3.12-slim
+variables:
+  requirements_file:
+    kind: repo_file
+    required: true
+  source_directory:
+    kind: repo_dir
+    required: true
+  port:
+    kind: port
+    required: true
+  run_command:
+    kind: exec_command
+    required: true
