@@ -1,0 +1,7 @@
+FROM {{ base_image }}
+WORKDIR /app
+COPY {{ source_directory }} .
+RUN npm install
+RUN npm run build
+EXPOSE {{ port }}
+CMD {{ run_command }}

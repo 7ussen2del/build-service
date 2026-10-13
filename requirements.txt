@@ -1,0 +1,10 @@
+Django==5.1.4
+djangorestframework==3.15.2
+celery==5.4.0
+redis==5.2.1
+psycopg[binary]==3.2.3
+dj-database-url==2.3.0
+Jinja2==3.1.4
+requests==2.32.3
+pytest==8.3.4
+pytest-django==4.9.0

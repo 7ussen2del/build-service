@@ -1,0 +1,73 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'BUILD_ID', defaultValue: '')
+        string(name: 'REPO_URL', defaultValue: '')
+        string(name: 'COMMIT_SHA', defaultValue: '')
+        text(name: 'DOCKERFILE_B64', defaultValue: '')
+        string(name: 'IMAGE_REPOSITORY', defaultValue: '')
+        string(name: 'IMAGE_TAG', defaultValue: '')
+        string(name: 'CALLBACK_URL', defaultValue: '')
+    }
+
+    environment {
+        // Registry credentials and the callback token come from Jenkins credentials,
+        // never from job parameters.
+        REGISTRY = credentials('dockerhub')
+        CALLBACK_TOKEN = credentials('build-callback-token')
+    }
+
+    stages {
+        stage('Checkout commit') {
+            steps {
+                sh 'git init -q .'
+                sh 'git remote add origin "$REPO_URL"'
+                sh 'git fetch --depth 1 origin "$COMMIT_SHA"'
+                sh 'git checkout -q "$COMMIT_SHA"'
+            }
+        }
+        stage('Write Dockerfile') {
+            steps {
+                sh 'echo "$DOCKERFILE_B64" | base64 -d > Dockerfile'
+            }
+        }
+        stage('Build') {
+            steps {
+                sh 'docker build -t "$IMAGE_REPOSITORY:$IMAGE_TAG" -f Dockerfile .'
+            }
+        }
+        stage('Push') {
+            steps {
+                sh 'echo "$REGISTRY_PSW" | docker login -u "$REGISTRY_USR" --password-stdin'
+                sh 'docker push "$IMAGE_REPOSITORY:$IMAGE_TAG"'
+            }
+        }
+        stage('Report success') {
+            steps {
+                script {
+                    def digest = sh(
+                        script: 'docker inspect --format="{{index .RepoDigests 0}}" "$IMAGE_REPOSITORY:$IMAGE_TAG" | cut -d@ -f2',
+                        returnStdout: true,
+                    ).trim()
+                    sh """curl -sS -X POST "$CALLBACK_URL" \
+                        -H 'Authorization: Bearer ${CALLBACK_TOKEN}' \
+                        -H 'Content-Type: application/json' \
+                        -d '{"status":"success","image_digest":"${digest}"}'"""
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            sh """curl -sS -X POST "$CALLBACK_URL" \
+                -H 'Authorization: Bearer ${CALLBACK_TOKEN}' \
+                -H 'Content-Type: application/json' \
+                -d '{"status":"failed","error_code":"BUILD_FAILED","error_message":"docker build or push failed"}'"""
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
