@@ -1,7 +1,7 @@
 FROM {{ base_image }}
 WORKDIR /app
 COPY {{ requirements_file }} .
-RUN pip install --no-cache-dir -r {{ requirements_file }}
+RUN pip install --no-cache-dir -r requirements.txt
 COPY {{ source_directory }} .
 EXPOSE {{ port }}
 CMD {{ run_command }}

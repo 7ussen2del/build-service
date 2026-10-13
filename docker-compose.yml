@@ -37,5 +37,19 @@ services:
       - postgres
       - redis
 
+  # Local build executor. The mounted Docker socket gives Jenkins control of the
+  # host daemon (needed for docker build/push) -- that is host-root-equivalent
+  # access, so this arrangement is for local testing only, never production.
+  jenkins:
+    build:
+      context: .
+      dockerfile: jenkins/Dockerfile
+    ports:
+      - "8081:8080"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+
 volumes:
   postgres_data:
+  jenkins_home:

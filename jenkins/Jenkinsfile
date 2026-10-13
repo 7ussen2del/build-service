@@ -13,7 +13,9 @@ pipeline {
 
     environment {
         // Registry credentials and the callback token come from Jenkins credentials,
-        // never from job parameters.
+        // never from job parameters. Every sh step below is single-quoted so the
+        // shell expands these from the environment -- a Groovy-interpolated string
+        // would leak the secret into the process list and the build log.
         REGISTRY = credentials('dockerhub')
         CALLBACK_TOKEN = credentials('build-callback-token')
     }
@@ -46,27 +48,33 @@ pipeline {
         stage('Report success') {
             steps {
                 script {
-                    def digest = sh(
+                    env.IMAGE_DIGEST = sh(
                         script: 'docker inspect --format="{{index .RepoDigests 0}}" "$IMAGE_REPOSITORY:$IMAGE_TAG" | cut -d@ -f2',
-                        returnStdout: true,
+                        returnStdout: true
                     ).trim()
-                    sh """curl -sS -X POST "$CALLBACK_URL" \
-                        -H 'Authorization: Bearer ${CALLBACK_TOKEN}' \
-                        -H 'Content-Type: application/json' \
-                        -d '{"status":"success","image_digest":"${digest}"}'"""
                 }
+                sh '''
+                    printf '{"status":"success","image_digest":"%s"}' "$IMAGE_DIGEST" > result.json
+                    curl -sS -X POST "$CALLBACK_URL" \
+                        -H "Authorization: Bearer $CALLBACK_TOKEN" \
+                        -H "Content-Type: application/json" \
+                        --data @result.json
+                '''
             }
         }
     }
 
     post {
         failure {
-            sh """curl -sS -X POST "$CALLBACK_URL" \
-                -H 'Authorization: Bearer ${CALLBACK_TOKEN}' \
-                -H 'Content-Type: application/json' \
-                -d '{"status":"failed","error_code":"BUILD_FAILED","error_message":"docker build or push failed"}'"""
+            sh '''
+                curl -sS -X POST "$CALLBACK_URL" \
+                    -H "Authorization: Bearer $CALLBACK_TOKEN" \
+                    -H "Content-Type: application/json" \
+                    -d '{"status":"failed","error_code":"BUILD_FAILED","error_message":"docker build or push failed"}'
+            '''
         }
         always {
+            sh 'docker logout || true'
             cleanWs()
         }
     }
