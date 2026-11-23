@@ -27,14 +27,18 @@ class BuildRequestSerializer(serializers.Serializer):
     repository_url = serializers.CharField(max_length=500)
     branch = serializers.CharField(max_length=200)
     application_type = serializers.ChoiceField(choices=ApplicationType.values)
-    source_directory = serializers.CharField(max_length=500)
+    source_directory = serializers.CharField(
+        max_length=500, required=False, allow_null=True, allow_blank=True
+    )
     requirements_file = serializers.CharField(
         max_length=500, required=False, allow_null=True
     )
     port = serializers.IntegerField(
         min_value=1, max_value=65535, required=False, allow_null=True
     )
-    run_command = serializers.CharField(max_length=1000)
+    run_command = serializers.CharField(
+        max_length=1000, required=False, allow_null=True, allow_blank=True
+    )
 
     def validate_name(self, value):
         if not _NAME_RE.match(value):
@@ -63,6 +67,8 @@ class BuildRequestSerializer(serializers.Serializer):
         return value
 
     def validate_source_directory(self, value):
+        if value in (None, ""):
+            return value
         return _check_relative_path(value)
 
     def validate_requirements_file(self, value):
@@ -71,6 +77,8 @@ class BuildRequestSerializer(serializers.Serializer):
         return _check_relative_path(value)
 
     def validate_run_command(self, value):
+        if value in (None, ""):
+            return value
         if any(c in value for c in ("\x00", "\n", "\r")):
             raise serializers.ValidationError("Must not contain NUL or newline.")
         return value

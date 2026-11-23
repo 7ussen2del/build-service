@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 from django.conf import settings
 
-from builds import templating
+from builds import tasks, templating
 from builds.models import Build, BuildStatus
 from builds.tasks import run_build_pipeline
 from integrations import git, jenkins
@@ -45,6 +45,8 @@ def happy(monkeypatch, tmp_path):
     )
     trigger = MagicMock()
     monkeypatch.setattr(jenkins, "trigger_build", trigger)
+    monkeypatch.setattr(tasks.notify_application_started, "delay", MagicMock())
+    monkeypatch.setattr(tasks.notify_application, "delay", MagicMock())
     return trigger
 
 
